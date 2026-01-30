@@ -24,7 +24,6 @@ def save_data(data):
 if 'portfolio' not in st.session_state:
     st.session_state.portfolio = load_data()
 
-# --- 強大數據抓取：自動修正所有欄位名稱並加入簡繁翻譯 ---
 @st.cache_data(ttl=60)
 def get_clean_data():
     try:
@@ -73,59 +72,55 @@ if st.session_state.portfolio and all_data is not None:
             curr_v = float(row.get('f_val', 0))
             pct = float(row.get('f_pct', 0))
             
-            # 1. 持有天數
             buy_dt = datetime.strptime(info['date'], "%Y-%m-%d")
             days = (datetime.now() - buy_dt).days
-            
-            # 2. 當天收益
             mkt_val = curr_v * info['shares']
             day_gain = mkt_val * (pct / 100)
-            
-            # 3. 累計盈虧
             total_gain = (curr_v - info['cost']) * info['shares']
             
             rows.append({
                 "代碼": code, "名稱": row.get('f_name', '未知'),
                 "淨值估算": curr_v, "當日漲幅": pct,
                 "當天收益": day_gain, "累計盈虧": total_gain,
-                "持有天數": f"{max(0, days)}天",
-                "關聯板塊": "點擊下方查看詳情"
+                "持有天數": f"{max(0, days)}天"
             })
 
     if rows:
         df_final = pd.DataFrame(rows)
-        
-        # 視覺化指標
         m1, m2, m3 = st.columns(3)
         m1.metric("今日總預估收益", f"¥{df_final['當天收益'].sum():,.2f}")
         m2.metric("累計總盈虧", f"¥{df_final['累計盈虧'].sum():,.2f}")
         m3.metric("總持倉市值", f"¥{sum(df_final['淨值估算'] * pd.Series([st.session_state.portfolio[c]['shares'] for c in df_final['代碼']])):,.2f}")
 
-        # 表格顯示 (解決你看不到細節的問題)
-        st.subheader("📋 詳細持倉數據 (包含漲幅、收益、天數)")
+        st.subheader("📋 詳細持倉數據")
         st.dataframe(df_final.style.format({
             '淨值估算': '{:.4f}', '當日漲幅': '{:+.2f}%', 
             '當天收益': '{:+.2f}', '累計盈虧': '{:+.2f}'
         }), use_container_width=True)
 
-        # 走勢圖與板塊分析
         st.divider()
         st.subheader("📊 深度分析：業績走勢與關聯板塊")
         sel = st.selectbox("選擇一支基金進行深度分析", df_final['代碼'].tolist())
         if sel:
             col_l, col_r = st.columns([2, 1])
             with col_l:
+                # 獲取歷史數據並自動修正簡繁標題
                 hist = ak.fund_open_fund_info_em(symbol=sel, indicator="單位淨值走勢")
-                hist['淨值日期'] = pd.to_datetime(hist['淨值日期'])
-                st.line_chart(hist.set_index('淨值日期')['單位淨值'])
+                hist = hist.rename(columns={'净值日期': 'date', '單位淨值': 'val', '单位净值': 'val'})
+                hist['date'] = pd.to_datetime(hist['date'])
+                st.line_chart(hist.set_index('date')['val'])
             with col_r:
-                st.write("**🔍 關聯重倉股票/板塊：**")
-                stocks = ak.fund_stock_holding_em(symbol=sel, date="20251231")
-                if not stocks.empty:
-                    st.write(stocks[['持股名稱', '持股比例']].head(10))
-                else:
-                    st.write("暫無持倉數據")
+                st.write("**🔍 關聯重倉股票 (推算板塊)：**")
+                try:
+                    stocks = ak.fund_stock_holding_em(symbol=sel, date="20251231")
+                    if not stocks.empty:
+                        # 顯示前10大持倉，這就是該基金關聯的板塊核心
+                        st.dataframe(stocks[['持股名稱', '持股比例']].head(10), hide_index=True)
+                    else:
+                        st.write("暫無持倉數據")
+                except:
+                    st.write("板塊數據讀取失敗，請稍後再試")
     else:
-        st.warning("數據匹配中，請確認代碼是否正確。")
+        st.warning("數據匹配中，請確認代碼正確。")
 else:
     st.info("💡 尚未添加基金。請在左側填寫持倉資訊。")
