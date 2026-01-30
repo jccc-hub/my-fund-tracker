@@ -24,20 +24,18 @@ def save_data(data):
 if 'portfolio' not in st.session_state:
     st.session_state.portfolio = load_data()
 
+# --- 超強健數據抓取：不依賴固定欄位名 ---
 @st.cache_data(ttl=60)
 def get_clean_data():
     try:
         df = ak.fund_value_estimation_em()
-        mapping = {
-            '基金代码': 'f_code', '基金代碼': 'f_code',
-            '基金名称': 'f_name', '基金名稱': 'f_name',
-            '估算净值': 'f_val', '估算淨值': 'f_val',
-            '估算涨跌幅': 'f_pct', '估算漲跌幅': 'f_pct'
-        }
-        df = df.rename(columns=mapping)
-        return df
+        # 強制根據列的順序重命名，避免簡繁體/文字變動問題
+        # 0:代碼, 1:名稱, 2:估算淨值, 3:估算漲跌幅
+        new_cols = {df.columns[0]: 'f_code', df.columns[1]: 'f_name', 
+                    df.columns[2]: 'f_val', df.columns[3]: 'f_pct'}
+        return df.rename(columns=new_cols)
     except Exception as e:
-        st.error(f"數據源異常: {e}")
+        st.error(f"數據抓取失敗: {e}")
         return None
 
 # --- 側邊欄 ---
@@ -66,11 +64,13 @@ all_data = get_clean_data()
 if st.session_state.portfolio and all_data is not None:
     rows = []
     for code, info in st.session_state.portfolio.items():
-        target = all_data[all_data['f_code'] == str(code)]
+        target = all_data[all_data['f_code'].astype(str) == str(code)]
         if not target.empty:
             row = target.iloc[0]
-            curr_v = float(row.get('f_val', 0))
-            pct = float(row.get('f_pct', 0))
+            try:
+                curr_v = float(row['f_val'])
+                pct = float(row['f_pct'])
+            except: curr_v, pct = 0.0, 0.0
             
             buy_dt = datetime.strptime(info['date'], "%Y-%m-%d")
             days = (datetime.now() - buy_dt).days
@@ -79,7 +79,7 @@ if st.session_state.portfolio and all_data is not None:
             total_gain = (curr_v - info['cost']) * info['shares']
             
             rows.append({
-                "代碼": code, "名稱": row.get('f_name', '未知'),
+                "代碼": code, "名稱": row['f_name'],
                 "淨值估算": curr_v, "當日漲幅": pct,
                 "當天收益": day_gain, "累計盈虧": total_gain,
                 "持有天數": f"{max(0, days)}天"
@@ -87,6 +87,7 @@ if st.session_state.portfolio and all_data is not None:
 
     if rows:
         df_final = pd.DataFrame(rows)
+        # 指標
         m1, m2, m3 = st.columns(3)
         m1.metric("今日總預估收益", f"¥{df_final['當天收益'].sum():,.2f}")
         m2.metric("累計總盈虧", f"¥{df_final['累計盈虧'].sum():,.2f}")
@@ -100,27 +101,27 @@ if st.session_state.portfolio and all_data is not None:
 
         st.divider()
         st.subheader("📊 深度分析：業績走勢與關聯板塊")
-        sel = st.selectbox("選擇一支基金進行深度分析", df_final['代碼'].tolist())
+        sel = st.selectbox("選擇基金進行深度分析", df_final['代碼'].tolist())
         if sel:
-            col_l, col_r = st.columns([2, 1])
-            with col_l:
-                # 獲取歷史數據並自動修正簡繁標題
-                hist = ak.fund_open_fund_info_em(symbol=sel, indicator="單位淨值走勢")
-                hist = hist.rename(columns={'净值日期': 'date', '單位淨值': 'val', '单位净值': 'val'})
-                hist['date'] = pd.to_datetime(hist['date'])
-                st.line_chart(hist.set_index('date')['val'])
-            with col_r:
-                st.write("**🔍 關聯重倉股票 (推算板塊)：**")
+            l, r = st.columns([2, 1])
+            with l:
                 try:
-                    stocks = ak.fund_stock_holding_em(symbol=sel, date="20251231")
-                    if not stocks.empty:
-                        # 顯示前10大持倉，這就是該基金關聯的板塊核心
-                        st.dataframe(stocks[['持股名稱', '持股比例']].head(10), hide_index=True)
-                    else:
-                        st.write("暫無持倉數據")
-                except:
-                    st.write("板塊數據讀取失敗，請稍後再試")
-    else:
-        st.warning("數據匹配中，請確認代碼正確。")
+                    h = ak.fund_open_fund_info_em(symbol=sel, indicator="單位淨值走勢")
+                    # 自動抓取第一列(日期)和第二列(淨值)
+                    h = h.iloc[:, [0, 1]]
+                    h.columns = ['date', 'val']
+                    h['date'] = pd.to_datetime(h['date'])
+                    st.line_chart(h.set_index('date')['val'])
+                except: st.error("走勢數據暫時無法獲取")
+            with r:
+                try:
+                    s = ak.fund_stock_holding_em(symbol=sel, date="20251231")
+                    if not s.empty:
+                        # 自動抓取名稱與比例列
+                        s = s.iloc[:, [0, 1, 2]] # 假設前三列包含名稱和比例
+                        st.write("**🔍 關聯重倉股票：**")
+                        st.dataframe(s.head(10), hide_index=True)
+                    else: st.write("暫無板塊持倉數據")
+                except: st.write("無法獲取板塊數據")
 else:
-    st.info("💡 尚未添加基金。請在左側填寫持倉資訊。")
+    st.info("💡 尚未添加基金或數據加載中...")
